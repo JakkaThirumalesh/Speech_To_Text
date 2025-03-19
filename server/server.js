@@ -3,9 +3,6 @@ const multer = require("multer");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 const dotenv = require("dotenv");
-const punycode = require("punycode");
-const fs = require("fs");
-const path = require("path");
 const { AssemblyAI } = require("assemblyai");
 
 // Load environment variables
@@ -15,28 +12,19 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 5000;
 
-// Configure CORS
-app.use(cors());
+// Allow frontend origin
+app.use(
+  cors({
+    origin: ["https://speech-to-text-7qhw.vercel.app/"],
+    methods: ["POST", "GET"],
+    credentials: false,
+  })
+);
 app.use(express.json());
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, "uploads");
-
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  },
+app.get("/", (req, res) => {
+  res.send("<h1>Welcome to Backend</h1>");
 });
-
-const upload = multer({ storage: storage });
 
 // Initialize Supabase client
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -49,33 +37,50 @@ const assemblyai = new AssemblyAI({
 });
 
 // API endpoint to transcribe audio
-app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
+app.post("/api/transcribe", async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No audio file uploaded" });
+    if (!req.body.audio || !req.body.filename) {
+      console.error("❌ No audio file provided");
+      return res.status(400).json({ error: "No audio file provided" });
     }
 
-    const filePath = req.file.path;
+    const { audio, filename } = req.body;
 
-    // Read file as buffer
-    const audioFile = fs.readFileSync(filePath);
+    // Convert base64 to Buffer
+    const audioBuffer = Buffer.from(audio, "base64");
 
-    // Submit for transcription
+    // Upload to Supabase Storage
+    const { data, error: uploadError } = await supabase.storage
+      .from("audio-files")
+      .upload(`transcriptions/${Date().toString()}${filename}`, audioBuffer, {
+        contentType: "audio/mpeg",
+      });
+
+    if (uploadError) {
+      console.error("❌ Supabase Upload Error:", uploadError);
+      return res.status(500).json({ error: "Supabase file upload failed" });
+    }
+
+    const publicUrl = `${process.env.SUPABASE_URL}/storage/v1/object/public/audio-files/${data.path}`;
+
+    // Transcribe with AssemblyAI
     const transcript = await assemblyai.transcripts.transcribe({
-      audio: audioFile,
+      audio_url: publicUrl,
       language_code: "en",
     });
 
-    // Return the transcription
-    return res.json({
+    res.json({
       text: transcript.text,
-      audioId: req.file.filename,
-      audioUrl: req.file.path,
+      audioUrl: publicUrl,
     });
   } catch (error) {
-    console.error("Error transcribing audio:", error);
-    return res.status(500).json({ error: "Failed to transcribe audio" });
+    console.error("❌ Backend Error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
   }
+});
+
+app.get("/api/transcribe", async (req, res) => {
+  return res.send("Backend is Running");
 });
 
 // API endpoint to save transcription

@@ -31,10 +31,34 @@ export default function App() {
         }
       };
 
+      const audioMimeTypes = [
+        "audio/wav",
+        "audio/mpeg",
+        "audio/ogg",
+        "audio/webm",
+        "audio/flac",
+        "audio/aac",
+        "audio/mp4",
+      ];
+
+      // Filter only audio MIME types
+      const validAudioTypes = audioMimeTypes.filter((type) =>
+        type.startsWith("audio/")
+      );
+
+      // Select a format dynamically (e.g., MP3 or the first available format)
+      const selectedType = validAudioTypes.includes("audio/mpeg")
+        ? "audio/mpeg"
+        : validAudioTypes[0];
+
       recorder.onstop = () => {
-        const audioBlob = new Blob(chunks, { type: "audio/wav" });
+        const audioBlob = new Blob(chunks, { type: selectedType });
         setAudioChunks(chunks);
-        setFile(new File([audioBlob], "recording.wav", { type: "audio/wav" }));
+        setFile(
+          new File([audioBlob], `recording.${selectedType.split("/")[1]}`, {
+            type: selectedType,
+          })
+        );
       };
 
       recorder.start();
@@ -63,30 +87,36 @@ export default function App() {
     setLoading(true);
     setError("");
 
-    const formData = new FormData();
-    formData.append("audio", file);
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onloadend = async () => {
+      try {
+        const base64Audio = reader.result.split(",")[1]; // Extract base64 data
+        const response = await fetch(
+          `${import.meta.env.VITE_REACT_APP_BACKEND_BASEURL}/api/transcribe`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              audio: base64Audio,
+              filename: file.name,
+            }),
+          }
+        );
 
-    try {
-      const response = await fetch(
-        `${import.meta.env.VITE_REACT_APP_BACKEND_BASEURL}/api/transcribe`,
-        {
-          method: "POST",
-          body: formData,
+        if (!response.ok) {
+          throw new Error(`Server responded with ${response.status}`);
         }
-      );
 
-      if (!response.ok) {
-        throw new Error(`Server responded with ${response.status}`);
+        const data = await response.json();
+        setTranscription(data.text);
+      } catch (err) {
+        console.error("Error transcribing audio:", err);
+        setError("Failed to transcribe audio. Please try again.");
+      } finally {
+        setLoading(false);
       }
-
-      const data = await response.json();
-      setTranscription(data.text);
-    } catch (err) {
-      console.error("Error transcribing audio:", err);
-      setError("Failed to transcribe audio. Please try again.");
-    } finally {
-      setLoading(false);
-    }
+    };
   };
 
   const handleSave = async () => {
